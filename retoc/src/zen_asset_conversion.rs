@@ -380,6 +380,14 @@ fn build_zen_import_map(builder: &mut ZenPackageBuilder) -> anyhow::Result<()> {
                 *cell_import = FPackageObjectIndex::create_package_import(package_import);
             }
         }
+    } else {
+        // Legacy UE4 package dependencies are expected in deterministic package ID order
+        builder.zen_package.imported_packages.sort_unstable();
+
+        // Update package_import_lookup with sorted indices
+        for (new_index, package_id) in builder.zen_package.imported_packages.iter().enumerate() {
+            builder.package_import_lookup.insert(*package_id, new_index as u32);
+        }
     }
 
     Ok(())
@@ -542,8 +550,8 @@ fn build_zen_dependency_bundles_legacy(builder: &mut ZenPackageBuilder, export_l
             });
         }
 
-        // Export bundles end at a public export with an export hash. So if this is a public export, close the current bundle
-        if is_public_export {
+        // Legacy UE4 package graphs (Initial) are package-scoped; newer versions split on public exports.
+        if builder.container_header_version > EIoContainerHeaderVersion::Initial && is_public_export {
             current_export_bundle_header_index = -1;
         }
     }

@@ -9,7 +9,7 @@ use crate::name_map::FMappedName;
 use crate::script_objects::{FPackageObjectIndex, FPackageObjectIndexType, FScriptObjectEntry, ZenScriptObjects};
 use crate::ser::{ReadExt, Utf8String, WriteExt};
 use crate::verse_vm_types::VPackage;
-use crate::zen::{EExportCommandType, EExportFilterFlags, EObjectFlags, FCellExportMapEntry, FExportMapEntry, FExternalDependencyArc, FInternalDependencyArc, FPackageFileVersion, FPackageIndex, FZenPackageHeader, FZenPackageVersioningInfo, ZenScriptCellsStore};
+use crate::zen::{EExportCommandType, EExportFilterFlags, EObjectFlags, FCellExportMapEntry, FExportMapEntry, FExternalDependencyArc, FPackageFileVersion, FPackageIndex, FZenPackageHeader, FZenPackageVersioningInfo, ZenScriptCellsStore};
 use crate::zen_asset_conversion::get_cell_export_hash;
 use crate::{EIoChunkType, FGuid, FIoChunkId, FPackageId, FileWriterTrait, UEPath};
 use crate::{debug, info, verbose, warning};
@@ -964,19 +964,7 @@ fn resolve_export_dependencies_internal_dependency_arcs(builder: &mut LegacyAsse
     }
 
     // Take the internal dependency arcs for the package, but for legacy packages we might need to create them ourselves
-    let mut internal_dependency_arcs = builder.zen_package.internal_dependency_arcs.clone();
-
-    // There are no internal dependency arcs available for legacy packages. Their export bundles are always serialized sequentially (e.g. 0 -> 1 -> 2), so they have
-    // implicit dependency between the next bundle and the previous bundle. So create the synthetic preload dependencies for that
-    if builder.zen_package.container_header_version <= EIoContainerHeaderVersion::Initial {
-        // Create an internal dependency arc from this export bundle to the previous export bundle
-        for export_bundle_index in 1..builder.zen_package.export_bundle_headers.len() {
-            internal_dependency_arcs.push(FInternalDependencyArc {
-                from_export_bundle_index: (export_bundle_index - 1) as i32,
-                to_export_bundle_index: export_bundle_index as i32,
-            })
-        }
-    }
+    let internal_dependency_arcs = builder.zen_package.internal_dependency_arcs.clone();
 
     // Process internal dependencies (export bundle to export bundle, e.g. export to export)
     // We link first element of the "to" bundle to the last element of the "from" bundle
@@ -1104,7 +1092,7 @@ fn apply_standalone_dependencies_to_package(builder: &mut LegacyAssetBuilder, ex
             dependencies.create_before_create.push(export_object.outer_index);
         }
         if !export_object.super_index.is_null() && !dependencies.create_before_create.contains(&export_object.super_index) {
-            dependencies.serialize_before_serialize.push(export_object.super_index);
+            dependencies.create_before_create.push(export_object.super_index);
         }
         // Ensure that we have class and archetype as serialize before create dependencies
         if !export_object.class_index.is_null() && !dependencies.serialize_before_create.contains(&export_object.class_index) {
@@ -1113,6 +1101,16 @@ fn apply_standalone_dependencies_to_package(builder: &mut LegacyAssetBuilder, ex
         if !export_object.template_index.is_null() && !dependencies.serialize_before_create.contains(&export_object.template_index) {
             dependencies.serialize_before_create.push(export_object.template_index);
         }
+
+        // Apply UE's cross-set deduplication rules (see SavePackage.cpp PreloadDependencies emit loop):
+        //  - SerializationBeforeSerialization: drop entries also in SerializationBeforeCreate (a serialize-before-create is stronger).
+        //  - CreateBeforeSerialization:        drop entries also in SerializationBeforeCreate, SerializationBeforeSerialization, or CreateBeforeCreate.
+        //  - SerializationBeforeCreate / CreateBeforeCreate: kept as-is (UE writes them unconditionally).
+        let sbc_set: HashSet<FPackageIndex> = dependencies.serialize_before_create.iter().copied().collect();
+        let cbc_set: HashSet<FPackageIndex> = dependencies.create_before_create.iter().copied().collect();
+        dependencies.serialize_before_serialize.retain(|x| !sbc_set.contains(x));
+        let sbs_set: HashSet<FPackageIndex> = dependencies.serialize_before_serialize.iter().copied().collect();
+        dependencies.create_before_serialize.retain(|x| !sbc_set.contains(x) && !sbs_set.contains(x) && !cbc_set.contains(x));
 
         // If we have no dependencies altogether, do not write first dependency import on the export
         if dependencies.create_before_create.is_empty() && dependencies.serialize_before_create.is_empty() && dependencies.create_before_serialize.is_empty() && dependencies.serialize_before_serialize.is_empty() {
