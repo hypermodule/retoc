@@ -1,0 +1,52 @@
+name: Windows MSVC one-off build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ue4_27b
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2025
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Build dist profile
+        run: >
+          cargo build
+          --locked
+          --profile dist
+          --package retoc_cli
+          --target x86_64-pc-windows-msvc
+
+      - name: Smoke test
+        run: >
+          target\x86_64-pc-windows-msvc\dist\retoc.exe
+          --version
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path package
+          Copy-Item target\x86_64-pc-windows-msvc\dist\retoc.exe package\
+          Copy-Item README.md, LICENSE package\
+          Compress-Archive `
+            -Path package\* `
+            -DestinationPath retoc-x86_64-pc-windows-msvc.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: retoc-x86_64-pc-windows-msvc
+          path: retoc-x86_64-pc-windows-msvc.zip
+          retention-days: 7
